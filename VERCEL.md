@@ -25,3 +25,5 @@ Public and private environment variables must also exist in Vercel, because .env
 Rate limiting uses per-instance memory. For a public launch, configure Vercel Firewall/rate limiting; the in-process counter is not a global distributed limit. Stock reservations and refunds still require the reconciliation process documented in README.md. This commit prepares deployment; it does not claim a successful Vercel deployment.
 
 References: https://vercel.com/docs/frameworks/frontend/vite and https://vercel.com/docs/functions/runtimes/node-js/advanced-node-configuration
+
+Plan choice: Vercel restricts Hobby to non-commercial personal use. Hairluke's live shop requires a commercial plan (Pro or Enterprise). See https://vercel.com/docs/limits/fair-use-guidelines .
