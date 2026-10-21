@@ -1,7 +1,7 @@
 -- Run once in Supabase SQL Editor after 001_hairluke.sql.
 begin;
 alter table public.orders drop constraint if exists orders_status_check;
-alter table public.orders add constraint orders_status_check check(status in ('pending','paid','shipped','delivered','cancelled','refunded'));
+alter table public.orders add constraint orders_status_check check(status in ('pending','paid','processing','shipped','delivered','cancelled','refunded'));
 alter table public.orders add column if not exists shipped_at timestamptz;
 alter table public.orders add column if not exists delivered_at timestamptz;
 alter table public.orders add column if not exists courier text;
@@ -40,7 +40,7 @@ begin
  select * into o from public.orders where checkout_id=p_checkout for update;
  if not found then return false; end if;
  if o.total_cents<>p_amount or (p_mode is not null and o.payment_mode<>p_mode) then raise exception 'Payment mismatch'; end if;
- if o.status in ('paid','shipped','delivered') then return o.payment_id=p_payment; end if;
+ if o.status in ('paid','processing','shipped','delivered') then return o.payment_id=p_payment; end if;
  if o.status<>'pending' then raise exception 'Order is not pending'; end if;
  update public.orders set status='paid',payment_id=p_payment,paid_at=now() where id=o.id;
  return true;

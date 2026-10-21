@@ -12,3 +12,6 @@ Before public signup:
 Stock deliveries and dispatch/delivered controls also require running supabase/migrations/002_inventory_fulfilment.sql once in Supabase SQL Editor. Account support itself requires no additional schema migration.
 
 Docs: https://supabase.com/docs/guides/auth/auth-smtp and https://supabase.com/docs/guides/auth/redirect-urls .
+
+## Checkout and fulfilment update
+Signed-in checkout binds the order email to the verified Supabase session on the server. Existing guest orders are visible only to an account with that exact verified email. Orders do not move between accounts. Admin prepares confirmed paid orders, dispatches with courier/tracking, then marks delivered. Customer order history refreshes every 15 seconds while visible. Test orders have explicit simulation actions; they never become live revenue or real shipments. Run the latest 002 migration (safe to rerun) to enable processing, tracking and stock history.

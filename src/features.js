@@ -8,7 +8,7 @@ export function selectProducts(products,{category='All',search='',texture='All',
 }
 export function dashboardStats(products,orders){
  const real=orders.filter(o=>o.payment_mode==='live');
- const paid=real.filter(o=>['paid','shipped','delivered'].includes(o.status));
+ const paid=real.filter(o=>['paid','processing','shipped','delivered'].includes(o.status));
  return {revenue:paid.reduce((sum,o)=>sum+o.total_cents,0),paidOrders:paid.length,toShip:real.filter(o=>o.status==='paid').length,lowStock:products.filter(p=>p.active&&p.stock<=5),pending:orders.filter(o=>o.status==='pending').length,testOrders:orders.filter(o=>o.payment_mode==='test').length};
 }
 export function csvCell(value){let s=String(value??'');if(/^[\s]*[=+\-@]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"'}

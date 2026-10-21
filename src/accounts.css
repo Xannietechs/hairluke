@@ -4,3 +4,5 @@
 @media(max-width:360px){.header-actions{gap:4px}.mobile-menu-button{min-width:31px;padding:4px}.cart-button{padding-left:8px;font-size:9px}.brand{font-size:27px}.account-page{padding:0 5%}.account-card{padding:22px}.customer-heading h1{font-size:30px}}
 
 .order-progress{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));list-style:none;padding:0;margin:25px 0;gap:10px}.order-progress li{border-top:3px solid #e5e0d9;padding-top:12px;font-size:11px;color:#8a857d}.order-progress li.done{border-color:#69715c;color:#3d4934}.order-progress li[aria-current]{font-weight:700}.order-progress li>span{display:block;margin-bottom:6px;font-size:18px}@media(max-width:520px){.order-progress{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.order-progress li{font-size:11px}}
+
+#confirmation-form{display:flex;flex-direction:column;gap:20px}#confirmation-form label{display:flex;flex-direction:column;gap:10px;font-size:12px}#confirmation-form input{width:100%;font-size:16px}.status-processing{background:#ece1ce;color:#684e26}
