@@ -1,0 +1,55 @@
+import express from 'express';
+import helmet from 'helmet';
+import {rateLimit} from 'express-rate-limit';
+import {createClient} from '@supabase/supabase-js';
+import {config} from 'dotenv';
+import {z} from 'zod';
+import crypto from 'node:crypto';
+import {verifyWebhook} from './payment.js';
+config({path:'.env.local'});config();
+const env=process.env,app=express();
+const supabase=env.SUPABASE_SERVICE_ROLE_KEY&&env.VITE_SUPABASE_URL?createClient(env.VITE_SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}}):null;
+const publicDb=env.VITE_SUPABASE_URL&&env.VITE_SUPABASE_PUBLISHABLE_KEY?createClient(env.VITE_SUPABASE_URL,env.VITE_SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:false}}):null;
+async function settings(){const db=supabase||publicDb;if(!db)throw Error('Database not configured');const {data,error}=await db.from('store_settings').select('shipping_cents,contact_email').eq('id',1).single();if(error)throw error;return data;}
+const origin=(env.APP_URL||(env.VERCEL_PROJECT_PRODUCTION_URL?'https://'+env.VERCEL_PROJECT_PRODUCTION_URL:env.VERCEL_URL?'https://'+env.VERCEL_URL:'http://localhost:5173')).replace(/\/$/,'');
+const ready=()=>Boolean(supabase&&env.YOCO_SECRET_KEY&&env.YOCO_WEBHOOK_SECRET&&env.STORE_READY==='true');
+app.disable('x-powered-by');
+if(env.VERCEL)app.set('trust proxy',1);
+app.use(helmet({contentSecurityPolicy:env.NODE_ENV==='production'?{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'",'https://fonts.googleapis.com'],fontSrc:["'self'",'https://fonts.gstatic.com'],imgSrc:["'self'",'https:','data:'],connectSrc:["'self'",env.VITE_SUPABASE_URL||'https://supabase.co'],formAction:["'self'"],upgradeInsecureRequests:[]}}:false}));
+app.post('/api/webhooks/yoco',express.raw({type:'application/json',limit:'100kb'}),async(req,res)=>{try{
+ if(!supabase||!env.YOCO_WEBHOOK_SECRET)return res.status(503).json({error:'Webhook is not configured.'});
+ if(!verifyWebhook(req.headers,req.body,env.YOCO_WEBHOOK_SECRET))return res.status(403).json({error:'Invalid signature.'});
+ const event=JSON.parse(req.body.toString());if(event.type!=='payment.succeeded')return res.sendStatus(204);
+ const p=event.payload,checkout=p?.metadata?.checkoutId;
+ if(!checkout||!Number.isInteger(p.amount)||p.currency!=='ZAR')return res.status(400).json({error:'Invalid payment event.'});
+ const {data,error}=await supabase.rpc('confirm_payment',{p_checkout:checkout,p_amount:p.amount,p_payment:String(p.id),p_mode:p.mode||p.processingMode||null});
+ if(error)throw error;if(!data)return res.status(409).json({error:'Checkout is not ready for reconciliation.'});
+ res.sendStatus(204);
+ }catch(err){console.error('Webhook processing failed:',err.message);res.status(500).json({error:'Payment confirmation will be retried.'})}});
+app.use('/api',express.json({limit:'32kb'}));
+app.use('/api',rateLimit({windowMs:60000,limit:100,standardHeaders:'draft-7',legacyHeaders:false}));
+app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.headers.origin&&req.headers.origin!==origin)return res.status(403).json({error:'Origin is not allowed.'});next()});
+app.get('/api/config',async(req,res)=>{try{const store=await settings();res.json({...store,checkout_ready:ready()})}catch{res.json({checkout_ready:false,shipping_cents:8000,contact_email:'tumzena@gmail.com'})}});
+const customer=z.object({name:z.string().trim().min(2).max(120),email:z.string().email().max(200),phone:z.string().trim().min(7).max(30),address:z.string().trim().min(5).max(250),city:z.string().trim().min(2).max(100),province:z.string().trim().min(2).max(100),postal_code:z.string().regex(/^\d{4}$/)}).strict();
+const checkout=z.object({expected_total:z.number().int().min(200).max(100000000),items:z.array(z.object({id:z.string().uuid(),qty:z.number().int().min(1).max(20)}).strict()).min(1).max(30),customer}).strict();
+app.post('/api/checkout',rateLimit({windowMs:60000,limit:5}),async(req,res)=>{if(!ready())return res.status(503).json({error:'Online checkout is not enabled yet.'});const parsed=checkout.safeParse(req.body);if(!parsed.success)return res.status(400).json({error:'Please check your cart and delivery details.'});if(new Set(parsed.data.items.map(i=>i.id)).size!==parsed.data.items.length)return res.status(400).json({error:'Duplicate cart items.'});try{
+ const store=await settings();const shipping=store.shipping_cents;const token=crypto.randomBytes(32).toString('hex');
+ const {data:order,error}=await supabase.rpc('create_order',{p_items:parsed.data.items,p_customer:parsed.data.customer,p_shipping:shipping,p_token:token,p_expected:parsed.data.expected_total});if(error) return res.status(409).json({error:'Stock or prices have changed. Refresh the shop and try again.'});
+ const request={amount:order.total_cents,currency:'ZAR',successUrl:origin+'/payment?order='+token,cancelUrl:origin+'/payment?result=cancelled&order='+token,failureUrl:origin+'/payment?result=failed&order='+token,metadata:{orderId:order.id},externalId:order.id};
+ const response=await fetch('https://payments.yoco.com/api/checkouts',{method:'POST',headers:{Authorization:'Bearer '+env.YOCO_SECRET_KEY,'Content-Type':'application/json','Idempotency-Key':order.id},body:JSON.stringify(request),signal:AbortSignal.timeout(20000)});
+ if(!response.ok)throw Error('Yoco checkout creation failed');const payment=await response.json();
+ if(!payment.id||!payment.redirectUrl||!['test','live'].includes(payment.processingMode))throw Error('Unexpected checkout response');
+ const redirect=new URL(payment.redirectUrl);if(redirect.protocol!=='https:'||!(redirect.hostname==='yoco.com'||redirect.hostname.endsWith('.yoco.com')))throw Error('Invalid payment destination');
+ const {error:saveError}=await supabase.from('orders').update({checkout_id:payment.id,payment_mode:payment.processingMode}).eq('id',order.id).eq('status','pending');if(saveError)throw saveError;
+ res.json({redirectUrl:redirect.href,token});
+ }catch(err){console.error('Checkout failed:',err.message);res.status(502).json({error:'Unable to start payment. No payment has been confirmed. Please try again later.'})}});
+app.get('/api/orders/:token',async(req,res)=>{if(!supabase)return res.status(503).json({error:'Orders are not configured.'});if(!/^[a-f0-9]{64}$/.test(req.params.token))return res.status(404).json({error:'Order not found.'});const {data,error}=await supabase.from('orders').select('id,status').eq('lookup_token',req.params.token).maybeSingle();if(error)return res.status(503).json({error:'Unable to check order status.'});if(!data)return res.status(404).json({error:'Order not found.'});res.json(data)});
+async function admin(req,res,next){if(!supabase)return res.status(503).json({error:'Server database access is not configured. Follow SETUP.md.'});const token=req.headers.authorization?.replace(/^Bearer /,'');if(!token)return res.status(401).json({error:'Sign in to continue.'});const {data,error}=await supabase.auth.getUser(token);if(error||!data.user)return res.status(401).json({error:'Your session has expired. Sign in again.'});if(data.user.app_metadata?.role!=='admin')return res.status(403).json({error:'This account is not an authorised store administrator.'});next()}
+app.get('/api/admin',admin,async(req,res)=>{const [products,orders]=await Promise.all([supabase.from('products').select('*').order('created_at'),supabase.from('orders').select('id,customer,items,total_cents,status,payment_mode,created_at').order('created_at',{ascending:false}).limit(100)]);if(products.error||orders.error)return res.status(503).json({error:'Database tables are not ready. Run the Supabase migration.'});res.json({products:products.data,orders:orders.data,settings:await settings()})});
+app.post('/api/admin/settings',admin,async(req,res)=>{const parsed=z.object({shipping_cents:z.number().int().min(0).max(1000000),contact_email:z.string().email().max(200)}).strict().safeParse(req.body);if(!parsed.success)return res.status(400).json({error:'Check the delivery fee and email.'});const {error}=await supabase.from('store_settings').update(parsed.data).eq('id',1);if(error)return res.status(409).json({error:'Could not save store settings.'});res.json({ok:true})});
+const product=z.object({id:z.string().uuid().optional(),name:z.string().trim().min(2).max(120),category:z.enum(['Wigs','Bundles','Closures']),texture:z.string().trim().min(1).max(60),length:z.string().trim().min(1).max(40),colour:z.string().trim().min(1).max(60),price_cents:z.number().int().min(200).max(10000000),stock:z.number().int().min(0).max(100000),image_url:z.string().max(2000).refine(s=>s.startsWith('/images/')||/^https:\/\//.test(s)),description:z.string().max(1500),active:z.boolean()}).strict();
+app.post('/api/admin/products',admin,async(req,res)=>{const p=product.safeParse(req.body);if(!p.success)return res.status(400).json({error:'Check the product fields, price and stock.'});const {error}=await supabase.from('products').upsert(p.data);if(error)return res.status(409).json({error:'Unable to save product.'});res.json({ok:true})});
+app.patch('/api/admin/orders/:id',admin,async(req,res)=>{if(!z.string().uuid().safeParse(req.params.id).success||req.body.status!=='shipped')return res.status(400).json({error:'Invalid order update.'});const {data,error}=await supabase.from('orders').update({status:'shipped'}).eq('id',req.params.id).eq('status','paid').eq('payment_mode','live').select('id');if(error||!data?.length)return res.status(409).json({error:'Only a paid order can be shipped.'});res.json({ok:true})});
+app.use('/api',(req,res)=>res.status(404).json({error:'Endpoint not found.'}));
+app.use((err,req,res,next)=>{console.error('Request failed:',err.message);res.status(400).json({error:'The request could not be processed.'})});
+export default app;

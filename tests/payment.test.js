@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import {verifyWebhook} from '../server/payment.js';
+const secret='whsec_'+Buffer.from('test-secret-only').toString('base64');
+const timestamp=String(Math.floor(Date.now()/1000));const raw=Buffer.from('{"type":"payment.succeeded","payload":{"amount":12300}}');
+const sign=body=>crypto.createHmac('sha256',Buffer.from('test-secret-only')).update('evt_1.'+timestamp+'.').update(body).digest('base64');
+const headers={'webhook-id':'evt_1','webhook-timestamp':timestamp,'webhook-signature':'v1,'+sign(raw)};
+test('accepts an authentic payment webhook',()=>assert.equal(verifyWebhook(headers,raw,secret),true));
+test('rejects payment amount tampering',()=>assert.equal(verifyWebhook(headers,Buffer.from(raw.toString().replace('12300','100')),secret),false));
+test('rejects old replayed events',()=>assert.equal(verifyWebhook(headers,raw,secret,(Number(timestamp)+181)*1000),false));
+test('rejects future timestamps',()=>assert.equal(verifyWebhook(headers,raw,secret,(Number(timestamp)-181)*1000),false));
+test('rejects malformed signature lengths without throwing',()=>assert.equal(verifyWebhook({...headers,'webhook-signature':'v1,a'},raw,secret),false));
+test('accepts a valid rotated signature',()=>assert.equal(verifyWebhook({...headers,'webhook-signature':'v1,bad '+headers['webhook-signature']},raw,secret),true));
+test('rejects missing configuration or headers',()=>{assert.equal(verifyWebhook({},raw,secret),false);assert.equal(verifyWebhook(headers,raw,''),false)});
